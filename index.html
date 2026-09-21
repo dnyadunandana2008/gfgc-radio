@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>GFGC Midigeshi Radio</title>
+<style>
+  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; background: #0b1120; color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 12px; }
+  .card { background: #161f30; border: 1px solid #283548; padding: 20px 18px; border-radius: 20px; box-shadow: 0 15px 40px rgba(0,0,0,.6); width: 100%; max-width: 420px; text-align: center; }
+  .role-tabs { display: flex; background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 4px; margin-bottom: 16px; }
+  .role-tab { flex: 1; padding: 10px; border: none; background: transparent; color: #94a3b8; font-weight: bold; font-size: 14px; border-radius: 8px; cursor: pointer; }
+  .role-tab.active { background: #2563eb; color: #fff; }
+  input, select { width: 100%; height: 48px; padding: 10px 14px; margin: 6px 0; border: 1.5px solid #334155; border-radius: 10px; font-size: 16px; background: #0f172a; color: #fff; outline: none; }
+  input:focus, select:focus { border-color: #3b82f6; }
+  .primary-btn { width: 100%; height: 48px; background: #2563eb; color: #fff; border: none; border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+  .error { color: #ef4444; font-size: 13px; margin-top: 8px; min-height: 16px; }
+  #appContent { display: none; }
+  .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .channel-badge { background: #1e3a8a; color: #60a5fa; padding: 5px 12px; border-radius: 16px; font-size: 12px; font-weight: bold; }
+  .nav-btn { background: #1e293b; border: 1px solid #334155; color: #cbd5e1; font-size: 12px; padding: 6px 12px; border-radius: 8px; cursor: pointer; margin-left: 6px; }
+  .user-pill { background: #0f172a; border: 1px solid #283548; color: #94a3b8; font-size: 12px; padding: 8px 12px; border-radius: 8px; text-align: left; margin-bottom: 12px; }
+  .status-panel { background: #0f172a; border: 1px solid #283548; padding: 10px; border-radius: 10px; margin: 8px 0 14px; font-size: 13px; }
+  .ptt-wrapper { margin: 20px 0; }
+  .ptt-btn { width: 175px; height: 175px; border-radius: 50%; background: #dc2626; color: #fff; font-size: 17px; font-weight: 800; border: 8px solid #991b1b; margin: 0 auto; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: none; transition: transform .1s, background .15s; }
+  .ptt-btn.transmitting { background: #16a34a; border-color: #15803d; transform: scale(.95); box-shadow: 0 0 28px rgba(22,163,74,.7); }
+  .ptt-btn.locked { background: #334155; border-color: #1e293b; color: #94a3b8; cursor: not-allowed; }
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; z-index: 50; }
+  .history-drawer { position: fixed; top: 0; right: -380px; width: 340px; max-width: 88%; height: 100%; background: #111827; border-left: 1px solid #1f2937; z-index: 60; transition: right .25s ease; display: flex; flex-direction: column; padding: 16px; }
+  .history-drawer.open { right: 0; }
+  .drawer-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid #1f2937; margin-bottom: 12px; }
+  .drawer-close { background: transparent; border: none; color: #9ca3af; font-size: 28px; cursor: pointer; }
+  .history-list { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+  .log-item { background: #1f2937; border-left: 3px solid #3b82f6; padding: 10px; border-radius: 8px; font-size: 12px; text-align: left; }
+  .log-item.lecturer { border-left-color: #f59e0b; }
+  .log-meta { display: flex; justify-content: space-between; gap: 8px; color: #9ca3af; margin-bottom: 3px; }
+  .log-speaker { font-weight: bold; color: #38bdf8; font-size: 13px; }
+  .log-speaker.lecturer { color: #fbbf24; }
+  .log-audio { width: 100%; height: 36px; margin-top: 6px; }
+  .new-badge { background: #ef4444; color: #fff; font-size: 10px; font-weight: bold; padding: 1px 6px; border-radius: 10px; margin-left: 4px; display: none; }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="loginBox" class="card">
+  <h2 style="margin:0 0 4px">GFGC Midigeshi</h2>
+  <p style="color:#94a3b8;font-size:13px;margin-bottom:14px">Campus Wireless Intercom</p>
+
+  <div class="role-tabs">
+    <button class="role-tab active" type="button" onclick="setRole('student')">Student Sign-In</button>
+    <button class="role-tab" type="button" onclick="setRole('lecturer')">Lecturer Sign-In</button>
+  </div>
+
+  <form onsubmit="handleLogin(event)">
+    <div id="studentFields">
+      <input type="text" id="regName" placeholder="Student Full Name" autocomplete="name" />
+      <input type="text" id="regUucms" placeholder="UUCMS Number" autocomplete="off" />
+      <select id="regClass">
+        <option value="" disabled selected>Select Class / Department</option>
+        <option>1st BA</option><option>2nd BA</option><option>3rd BA</option>
+        <option>1st B.Com</option><option>2nd B.Com</option><option>3rd B.Com</option>
+        <option>1st B.Sc</option><option>2nd B.Sc</option><option>3rd B.Sc</option>
+      </select>
+    </div>
+    <div id="lecturerFields" style="display:none">
+      <input type="text" id="lecName" placeholder="Lecturer Name (e.g., Dr. Kumar)" />
+      <input type="text" id="lecSubject" placeholder="Subject / Department" />
+      <input type="text" id="lecId" placeholder="Staff ID (e.g., STAFF-01)" />
+    </div>
+    <input type="password" id="regPass" placeholder="Campus Portal Password" required />
+    <button type="submit" class="primary-btn">Enter Campus Channel</button>
+    <div id="errMsg" class="error"></div>
+  </form>
+</div>
+
+<!-- RADIO -->
+<div id="appContent" class="card">
+  <div class="header-bar">
+    <span class="channel-badge">📻 GFGC CAMPUS</span>
+    <div>
+      <button class="nav-btn" type="button" onclick="openDrawer()">📜 History<span class="new-badge" id="newBadge">0</span></button>
+      <button class="nav-btn" type="button" onclick="logout()">Exit</button>
+    </div>
+  </div>
+
+  <div class="user-pill" id="userBadge"></div>
+
+  <div class="status-panel">
+    <div>Online: <span style="color:#22c55e;font-weight:bold" id="onlineCount">1</span></div>
+    <div id="channelState" style="margin-top:4px;font-weight:bold;color:#22c55e;font-size:13px">🟢 Channel Clear (Ready)</div>
+  </div>
+
+  <div class="ptt-wrapper">
+    <div class="ptt-btn" id="pttButton">
+      <span id="pttMain">HOLD</span>
+      <span id="pttSub" style="font-size:11px;font-weight:normal;margin-top:3px">TO SPEAK</span>
+    </div>
+  </div>
+  <p style="font-size:11px;color:#64748b;margin:0">All transmissions are saved in <strong>📜 History</strong> for everyone.</p>
+</div>
+
+<!-- HISTORY DRAWER -->
+<div class="overlay" id="overlay" onclick="closeDrawer()"></div>
+<div class="history-drawer" id="drawer">
+  <div class="drawer-header">
+    <span style="font-size:15px;font-weight:bold">📜 Channel Transmission Logs</span>
+    <button class="drawer-close" type="button" onclick="closeDrawer()">&times;</button>
+  </div>
+  <div class="history-list" id="historyLogs">
+    <div id="emptyLogMsg" style="color:#6b7280;font-size:13px;text-align:center;padding-top:25px">No recordings yet.</div>
+  </div>
+</div>
+
+<script>
+const TARGET_RATE = 16000;
+let currentRole = 'student';
+let ws = null, ctx = null, stream = null, processor = null;
+let creds = null;          // login info kept in memory for auto-reconnect
+let myId = null, speaker = null;
+let holding = false, transmitting = false, loggedIn = false;
+let nextPlayTime = 0, reconnectTimer = null, newCount = 0;
+const seen = new Set();
+const $ = (id) => document.getElementById(id);
+
+/* ---------- UI helpers ---------- */
+function setRole(r) {
+  currentRole = r;
+  const tabs = document.querySelectorAll('.role-tab');
+  tabs[0].classList.toggle('active', r === 'student');
+  tabs[1].classList.toggle('active', r === 'lecturer');
+  $('studentFields').style.display = r === 'student' ? 'block' : 'none';
+  $('lecturerFields').style.display = r === 'lecturer' ? 'block' : 'none';
+}
+function showError(t) { $('errMsg').textContent = t; }
+function openDrawer() {
+  $('drawer').classList.add('open'); $('overlay').style.display = 'block';
+  newCount = 0; $('newBadge').style.display = 'none';
+}
+function closeDrawer() { $('drawer').classList.remove('open'); $('overlay').style.display = 'none'; }
+
+function beep(end) {
+  try {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.value = end ? 950 : 1200;
+    g.gain.setValueAtTime(0.08, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(); o.stop(ctx.currentTime + 0.08);
+  } catch (e) {}
+}
+
+/* The one function that decides how the button looks */
+function updateUI() {
+  const btn = $('pttButton'), state = $('channelState');
+  const otherSpeaking = speaker && speaker.cid !== myId;
+  btn.classList.remove('transmitting', 'locked');
+
+  if (transmitting) {
+    btn.classList.add('transmitting');
+    $('pttMain').textContent = 'LIVE'; $('pttSub').textContent = 'TRANSMITTING';
+    state.textContent = '🎙️ You are speaking...'; state.style.color = '#22c55e';
+  } else if (otherSpeaking) {
+    btn.classList.add('locked');
+    $('pttMain').textContent = 'BUSY'; $('pttSub').textContent = 'IN USE';
+    state.textContent = speaker.role === 'lecturer'
+      ? `🔴 Prof. ${speaker.name} (${speaker.subject}) is speaking...`
+      : `🔴 ${speaker.name} (${speaker.uClass}) is speaking...`;
+    state.style.color = speaker.role === 'lecturer' ? '#fbbf24' : '#ef4444';
+  } else {
+    $('pttMain').textContent = 'HOLD'; $('pttSub').textContent = 'TO SPEAK';
+    state.textContent = '🟢 Channel Clear (Ready)'; state.style.color = '#22c55e';
+  }
+}
+
+function renderLog(log, isNew) {
+  if (seen.has(log.id)) return;
+  seen.add(log.id);
+  const empty = $('emptyLogMsg'); if (empty) empty.remove();
+
+  const u = log.user, isLec = u.role === 'lecturer';
+  const item = document.createElement('div');
+  item.className = 'log-item' + (isLec ? ' lecturer' : '');
+
+  const meta = document.createElement('div'); meta.className = 'log-meta';
+  const who = document.createElement('span'); who.className = 'log-speaker' + (isLec ? ' lecturer' : '');
+  who.textContent = isLec ? `🎓 Prof. ${u.name} (${u.subject})` : `👤 ${u.name} (${u.uClass})`;
+  const when = document.createElement('span');
+  when.textContent = new Date(log.ts).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ` · ${log.duration}s`;
+  meta.append(who, when);
+
+  const sub = document.createElement('div'); sub.style.cssText = 'color:#94a3b8;font-size:11px';
+  sub.textContent = isLec ? `Staff ID: ${u.staffId}` : `UUCMS: ${u.uucms}`;
+
+  const audio = document.createElement('audio');
+  audio.className = 'log-audio'; audio.controls = true; audio.preload = 'none';
+  audio.src = `/rec/${log.id}.wav`;
+
+  item.append(meta, sub, audio);
+  $('historyLogs').prepend(item);
+
+  if (isNew && !$('drawer').classList.contains('open')) {
+    newCount++; $('newBadge').textContent = newCount; $('newBadge').style.display = 'inline-block';
+  }
+}
+
+/* ---------- Login ---------- */
+async function handleLogin(e) {
+  e.preventDefault();
+  showError('');
+  const pass = $('regPass').value.trim();
+  let c;
+  if (currentRole === 'student') {
+    c = { type: 'login', role: 'student', name: $('regName').value.trim(), uucms: $('regUucms').value.trim(), uClass: $('regClass').value, pass };
+    if (!c.name || !c.uucms || !c.uClass) return showError('Please fill all fields');
+  } else {
+    c = { type: 'login', role: 'lecturer', name: $('lecName').value.trim(), subject: $('lecSubject').value.trim(), staffId: $('lecId').value.trim(), pass };
+    if (!c.name || !c.subject || !c.staffId) return showError('Please fill all fields');
+  }
+  creds = c;
+
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await ctx.resume();
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    setupMic();
+  } catch (err) {
+    return showError('Microphone permission is required (use HTTPS).');
+  }
+  connect();
+}
+
+function logout() { loggedIn = false; creds = null; location.reload(); }
+
+/* ---------- Microphone -> 16 kHz PCM ---------- */
+function setupMic() {
+  const src = ctx.createMediaStreamSource(stream);
+  processor = ctx.createScriptProcessor(4096, 1, 1);
+  const mute = ctx.createGain(); mute.gain.value = 0;
+  processor.onaudioprocess = (ev) => {
+    if (!transmitting || !ws || ws.readyState !== 1) return;
+    const pcm = downsample(ev.inputBuffer.getChannelData(0), ctx.sampleRate);
+    ws.send(pcm.buffer);
+  };
+  src.connect(processor); processor.connect(mute); mute.connect(ctx.destination);
+}
+
+function downsample(input, inRate) {
+  const ratio = inRate / TARGET_RATE;
+  const n = Math.floor(input.length / ratio);
+  const out = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    const s = Math.floor(i * ratio), e = Math.min(input.length, Math.floor((i + 1) * ratio));
+    let sum = 0; for (let j = s; j < e; j++) sum += input[j];
+    let v = sum / Math.max(1, e - s);
+    v = Math.max(-1, Math.min(1, v));
+    out[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+  }
+  return out;
+}
+
+/* ---------- Playback of live audio from others ---------- */
+function playChunk(buf) {
+  const i16 = new Int16Array(buf);
+  if (!i16.length) return;
+  const f32 = new Float32Array(i16.length);
+  for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+  const ab = ctx.createBuffer(1, f32.length, TARGET_RATE);
+  ab.copyToChannel(f32, 0);
+  const s = ctx.createBufferSource();
+  s.buffer = ab; s.connect(ctx.destination);
+  const now = ctx.currentTime;
+  if (nextPlayTime < now + 0.05) nextPlayTime = now + 0.2;   // small jitter buffer
+  s.start(nextPlayTime);
+  nextPlayTime += ab.duration;
+}
+
+/* ---------- WebSocket ---------- */
+function connect() {
+  clearTimeout(reconnectTimer);
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => ws.send(JSON.stringify(creds));
+
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== 'string') return playChunk(ev.data);
+    const m = JSON.parse(ev.data);
+
+    if (m.type === 'error') {
+      showError(m.msg); creds = null; ws.close(); return;
+    }
+    if (m.type === 'welcome') {
+      myId = m.myId; loggedIn = true;
+      $('loginBox').style.display = 'none';
+      $('appContent').style.display = 'block';
+      const u = creds;
+      $('userBadge').innerHTML = '';
+      const line1 = document.createElement('strong');
+      line1.textContent = u.role === 'lecturer' ? `🎓 ${u.name} (Lecturer - ${u.subject})` : `👤 ${u.name} (${u.uClass})`;
+      const line2 = document.createElement('div');
+      line2.style.cssText = 'color:#64748b;font-size:11px';
+      line2.textContent = u.role === 'lecturer' ? `Staff ID: ${u.staffId}` : `UUCMS: ${u.uucms}`;
+      $('userBadge').append(line1, line2);
+
+      m.history.forEach((l) => renderLog(l, false));
+      $('onlineCount').textContent = m.online;
+      speaker = m.speaker; nextPlayTime = 0; updateUI();
+    } else if (m.type === 'online') {
+      $('onlineCount').textContent = m.count;
+    } else if (m.type === 'speaking') {
+      speaker = m.user; nextPlayTime = 0;
+      if (speaker.cid !== myId) beep(false);
+      updateUI();
+    } else if (m.type === 'idle') {
+      const wasOther = speaker && speaker.cid !== myId;
+      speaker = null; transmitting = false; updateUI();
+      if (wasOther) beep(true);
+    } else if (m.type === 'new_log') {
+      renderLog(m.log, true);
+    } else if (m.type === 'granted') {
+      if (holding) { transmitting = true; beep(false); updateUI(); }
+      else ws.send(JSON.stringify({ type: 'ptt_end' }));
+    } else if (m.type === 'denied') {
+      holding = false; transmitting = false; updateUI();
+    }
+  };
+
+  ws.onclose = () => {
+    transmitting = false; holding = false;
+    if (creds) {   // auto-reconnect
+      if (loggedIn) $('channelState').textContent = '⚠️ Reconnecting...';
+      reconnectTimer = setTimeout(connect, 2000);
+    }
+  };
+}
+
+/* ---------- Push to talk ---------- */
+const ptt = $('pttButton');
+
+function pttDown(e) {
+  e.preventDefault();
+  if (!ws || ws.readyState !== 1 || holding) return;
+  if (speaker && speaker.cid !== myId) return;          // channel busy
+  holding = true;
+  try { ptt.setPointerCapture(e.pointerId); } catch (err) {}
+  ctx.resume();
+  ws.send(JSON.stringify({ type: 'ptt_start' }));
+}
+function pttUp(e) {
+  if (e) e.preventDefault();
+  if (!holding) return;
+  holding = false;
+  if (transmitting) {
+    transmitting = false;
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'ptt_end' }));
+    beep(true); updateUI();
+  }
+}
+ptt.addEventListener('pointerdown', pttDown);
+ptt.addEventListener('pointerup', pttUp);
+ptt.addEventListener('pointercancel', pttUp);
+ptt.addEventListener('contextmenu', (e) => e.preventDefault());
+</script>
+</body>
+</html>
