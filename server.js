@@ -288,4 +288,3 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => console.log('GFGC Radio running on port ' + PORT));
-SERVEREOF
