@@ -130,6 +130,7 @@
 const TARGET_RATE = 16000;
 let currentRole = 'student';
 let ws = null, ctx = null, stream = null, processor = null;
+let mediaDest = null, keepAliveEl = null, wakeLock = null;
 let creds = null;          // login info kept in memory for auto-reconnect
 let myId = null, speaker = null;
 let holding = false, transmitting = false, loggedIn = false;
@@ -137,6 +138,61 @@ let nextPlayTime = 0, reconnectTimer = null, newCount = 0;
 const seen = new Set();
 const logElements = new Map();   // recording id -> its element on screen
 const $ = (id) => document.getElementById(id);
+
+/* ---------- Background keep-alive (Android) ---------- */
+// Routes all sound through one real <audio> element instead of raw speaker
+// output, and tells the phone's OS "this is a media player" via Media Session.
+// That's what lets Chrome on Android keep a page running (with a small
+// notification icon) after you minimize it — the same trick music/podcast
+// sites use. iPhone (Safari) does not honor this while minimized; that is
+// an Apple restriction with no workaround from a website.
+function setupBackgroundAudio() {
+  mediaDest = ctx.createMediaStreamDestination();
+  keepAliveEl = document.createElement('audio');
+  keepAliveEl.srcObject = mediaDest.stream;
+  keepAliveEl.autoplay = true;
+  keepAliveEl.setAttribute('playsinline', '');
+  keepAliveEl.style.display = 'none';
+  document.body.appendChild(keepAliveEl);
+  keepAliveEl.play().catch(() => {});
+
+  // A silent, continuous tone. Keeping the audio element ACTUALLY playing
+  // (never fully idle) is what stops Android from freezing the page while
+  // it's minimized — a truly silent/idle element gets throttled just like
+  // a normal tab.
+  const hum = ctx.createOscillator();
+  const humGain = ctx.createGain();
+  hum.frequency.value = 30;          // low, effectively inaudible
+  humGain.gain.value = 0.0004;
+  hum.connect(humGain); humGain.connect(mediaDest);
+  hum.start();
+
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'GFGC Midigeshi Radio',
+      artist: 'Campus Channel — Listening'
+    });
+    navigator.mediaSession.playbackState = 'playing';
+    // Show a play/pause control that doesn't actually pause the channel —
+    // it only mutes/unmutes so you don't lose your place on the channel.
+    navigator.mediaSession.setActionHandler('play', () => { keepAliveEl.muted = false; navigator.mediaSession.playbackState = 'playing'; });
+    navigator.mediaSession.setActionHandler('pause', () => { keepAliveEl.muted = false; navigator.mediaSession.playbackState = 'playing'; });
+  }
+}
+
+async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+  } catch (e) {}
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    if (keepAliveEl && keepAliveEl.paused) keepAliveEl.play().catch(() => {});
+    requestWakeLock();
+  }
+});
 
 /* ---------- UI helpers ---------- */
 function setRole(r) {
@@ -160,7 +216,7 @@ function beep(end) {
     o.type = 'sine'; o.frequency.value = end ? 950 : 1200;
     g.gain.setValueAtTime(0.08, ctx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
-    o.connect(g); g.connect(ctx.destination);
+    o.connect(g); g.connect(mediaDest || ctx.destination);
     o.start(); o.stop(ctx.currentTime + 0.08);
   } catch (e) {}
 }
@@ -279,6 +335,8 @@ async function startMicAndConnect() {
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
     setupMic();
+    setupBackgroundAudio();
+    requestWakeLock();
   } catch (err) {
     // Mic blocked — fall back to the sign-in screen so the user can retry
     $('loadingBox').style.display = 'none';
@@ -337,7 +395,7 @@ function playChunk(buf) {
   const ab = ctx.createBuffer(1, f32.length, TARGET_RATE);
   ab.copyToChannel(f32, 0);
   const s = ctx.createBufferSource();
-  s.buffer = ab; s.connect(ctx.destination);
+  s.buffer = ab; s.connect(mediaDest || ctx.destination);
   const now = ctx.currentTime;
   if (nextPlayTime < now + 0.05) nextPlayTime = now + 0.2;   // small jitter buffer
   s.start(nextPlayTime);
