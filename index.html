@@ -4,6 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>GFGC Midigeshi Radio</title>
+<link rel="manifest" href="/manifest.json" />
+<link rel="icon" href="/icon-192.png" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+<meta name="theme-color" content="#0b1120" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="GFGC Radio" />
 <style>
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
   body { margin: 0; background: #0b1120; color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 12px; }
@@ -37,10 +44,17 @@
   .log-speaker { font-weight: bold; color: #38bdf8; font-size: 13px; }
   .log-speaker.lecturer { color: #fbbf24; }
   .log-audio { width: 100%; height: 36px; margin-top: 6px; }
+  .del-btn { margin-top: 8px; background: #7f1d1d; color: #fecaca; border: 1px solid #991b1b; border-radius: 6px; font-size: 12px; padding: 5px 10px; cursor: pointer; }
   .new-badge { background: #ef4444; color: #fff; font-size: 10px; font-weight: bold; padding: 1px 6px; border-radius: 10px; margin-left: 4px; display: none; }
 </style>
 </head>
 <body>
+
+<!-- AUTO-LOGIN LOADING SCREEN -->
+<div id="loadingBox" class="card" style="display:none">
+  <h2 style="margin:0 0 8px">GFGC Midigeshi</h2>
+  <p style="color:#94a3b8;font-size:13px">Connecting you back in...</p>
+</div>
 
 <!-- LOGIN -->
 <div id="loginBox" class="card">
@@ -80,7 +94,7 @@
     <span class="channel-badge">📻 GFGC CAMPUS</span>
     <div>
       <button class="nav-btn" type="button" onclick="openDrawer()">📜 History<span class="new-badge" id="newBadge">0</span></button>
-      <button class="nav-btn" type="button" onclick="logout()">Exit</button>
+      <button class="nav-btn" type="button" onclick="switchUser()">Switch User</button>
     </div>
   </div>
 
@@ -121,6 +135,7 @@ let myId = null, speaker = null;
 let holding = false, transmitting = false, loggedIn = false;
 let nextPlayTime = 0, reconnectTimer = null, newCount = 0;
 const seen = new Set();
+const logElements = new Map();   // recording id -> its element on screen
 const $ = (id) => document.getElementById(id);
 
 /* ---------- UI helpers ---------- */
@@ -197,10 +212,36 @@ function renderLog(log, isNew) {
   audio.src = `/rec/${log.id}.wav`;
 
   item.append(meta, sub, audio);
+
+  // Delete button: any signed-in user can remove a recording for everyone
+  const del = document.createElement('button');
+  del.type = 'button'; del.className = 'del-btn'; del.textContent = '🗑 Delete';
+  del.onclick = () => {
+    if (confirm('Delete this recording for everyone?') && ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'delete_log', id: log.id }));
+    }
+  };
+  item.append(del);
+
+  logElements.set(log.id, item);
   $('historyLogs').prepend(item);
 
   if (isNew && !$('drawer').classList.contains('open')) {
     newCount++; $('newBadge').textContent = newCount; $('newBadge').style.display = 'inline-block';
+  }
+}
+
+function removeLog(id) {
+  const el = logElements.get(id);
+  if (el) el.remove();
+  logElements.delete(id);
+  seen.delete(id);
+  if (logElements.size === 0 && !$('emptyLogMsg')) {
+    const d = document.createElement('div');
+    d.id = 'emptyLogMsg';
+    d.style.cssText = 'color:#6b7280;font-size:13px;text-align:center;padding-top:25px';
+    d.textContent = 'No recordings yet.';
+    $('historyLogs').append(d);
   }
 }
 
@@ -218,7 +259,19 @@ async function handleLogin(e) {
     if (!c.name || !c.subject || !c.staffId) return showError('Please fill all fields');
   }
   creds = c;
+  localStorage.setItem(STORE_KEY, JSON.stringify(creds));
+  await startMicAndConnect();
+}
 
+function switchUser() {
+  loggedIn = false; creds = null;
+  localStorage.removeItem('gfgc_creds');
+  location.reload();
+}
+
+const STORE_KEY = 'gfgc_creds';
+
+async function startMicAndConnect() {
   try {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
     await ctx.resume();
@@ -227,12 +280,26 @@ async function handleLogin(e) {
     });
     setupMic();
   } catch (err) {
-    return showError('Microphone permission is required (use HTTPS).');
+    // Mic blocked — fall back to the sign-in screen so the user can retry
+    $('loadingBox').style.display = 'none';
+    $('loginBox').style.display = 'block';
+    showError('Microphone permission is required (use HTTPS).');
+    return false;
   }
   connect();
+  return true;
 }
 
-function logout() { loggedIn = false; creds = null; location.reload(); }
+// On page load: if we have a saved login, skip straight to the app instead of the form
+(function tryAutoLogin() {
+  const saved = localStorage.getItem(STORE_KEY);
+  if (!saved) return;
+  try { creds = JSON.parse(saved); } catch (e) { return; }
+  if (!creds || creds.type !== 'login') { creds = null; return; }
+  $('loginBox').style.display = 'none';
+  $('loadingBox').style.display = 'block';
+  startMicAndConnect();
+})();
 
 /* ---------- Microphone -> 16 kHz PCM ---------- */
 function setupMic() {
@@ -291,10 +358,14 @@ function connect() {
     const m = JSON.parse(ev.data);
 
     if (m.type === 'error') {
+      localStorage.removeItem(STORE_KEY);
+      $('loadingBox').style.display = 'none';
+      $('loginBox').style.display = 'block';
       showError(m.msg); creds = null; ws.close(); return;
     }
     if (m.type === 'welcome') {
       myId = m.myId; loggedIn = true;
+      $('loadingBox').style.display = 'none';
       $('loginBox').style.display = 'none';
       $('appContent').style.display = 'block';
       const u = creds;
@@ -306,6 +377,8 @@ function connect() {
       line2.textContent = u.role === 'lecturer' ? `Staff ID: ${u.staffId}` : `UUCMS: ${u.uucms}`;
       $('userBadge').append(line1, line2);
 
+      // Clear old list first (in case of reconnect), then show the full history
+      [...logElements.keys()].forEach(removeLog);
       m.history.forEach((l) => renderLog(l, false));
       $('onlineCount').textContent = m.online;
       speaker = m.speaker; nextPlayTime = 0; updateUI();
@@ -321,6 +394,8 @@ function connect() {
       if (wasOther) beep(true);
     } else if (m.type === 'new_log') {
       renderLog(m.log, true);
+    } else if (m.type === 'log_deleted') {
+      removeLog(m.id);
     } else if (m.type === 'granted') {
       if (holding) { transmitting = true; beep(false); updateUI(); }
       else ws.send(JSON.stringify({ type: 'ptt_end' }));

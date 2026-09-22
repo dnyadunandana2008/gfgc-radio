@@ -54,6 +54,10 @@ const server = http.createServer((req, res) => {
   }
   const m = /^\/rec\/([\w-]+)\.wav$/.exec(url);
   if (m) return serveFile(req, res, path.join(REC, m[1] + '.wav'), 'audio/wav');
+  if (url === '/manifest.json') return serveFile(req, res, path.join(__dirname, 'manifest.json'), 'application/manifest+json');
+  if (url === '/sw.js') return serveFile(req, res, path.join(__dirname, 'sw.js'), 'application/javascript');
+  if (url === '/icon-192.png') return serveFile(req, res, path.join(__dirname, 'icon-192.png'), 'image/png');
+  if (url === '/icon-512.png') return serveFile(req, res, path.join(__dirname, 'icon-512.png'), 'image/png');
   res.writeHead(404); res.end('Not found');
 });
 
@@ -156,6 +160,16 @@ wss.on('connection', (ws) => {
       sendJSON(ws, { type: 'granted' });
     } else if (msg.type === 'ptt_end') {
       if (speaker && speaker.ws === ws) endSpeaker();
+    } else if (msg.type === 'delete_log') {
+      // Any signed-in user (student or lecturer) can delete a recording
+      const id = String(msg.id || '');
+      if (!/^[\w-]+$/.test(id)) return;
+      const idx = history.findIndex((l) => l.id === id);
+      if (idx === -1) return;
+      history.splice(idx, 1);
+      fs.unlink(path.join(REC, id + '.wav'), () => {});
+      saveMeta();
+      broadcast({ type: 'log_deleted', id });
     }
   });
 
