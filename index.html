@@ -1,3 +1,4 @@
+cat > /mnt/user-data/outputs/index.html << 'HTMLEOF'
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -28,7 +29,8 @@
   .nav-btn { background: #1e293b; border: 1px solid #334155; color: #cbd5e1; font-size: 12px; padding: 6px 12px; border-radius: 8px; cursor: pointer; margin-left: 6px; }
   .user-pill { background: #0f172a; border: 1px solid #283548; color: #94a3b8; font-size: 12px; padding: 8px 12px; border-radius: 8px; text-align: left; margin-bottom: 12px; }
   .status-panel { background: #0f172a; border: 1px solid #283548; padding: 10px; border-radius: 10px; margin: 8px 0 14px; font-size: 13px; }
-  .ptt-wrapper { margin: 20px 0; }
+  .target-pill { width: 100%; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; font-size: 13px; font-weight: bold; padding: 10px; border-radius: 10px; cursor: pointer; margin-bottom: 4px; }
+  .ptt-wrapper { margin: 16px 0; }
   .ptt-btn { width: 175px; height: 175px; border-radius: 50%; background: #dc2626; color: #fff; font-size: 17px; font-weight: 800; border: 8px solid #991b1b; margin: 0 auto; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: none; transition: transform .1s, background .15s; }
   .ptt-btn.transmitting { background: #16a34a; border-color: #15803d; transform: scale(.95); box-shadow: 0 0 28px rgba(22,163,74,.7); }
   .ptt-btn.locked { background: #334155; border-color: #1e293b; color: #94a3b8; cursor: not-allowed; }
@@ -46,6 +48,17 @@
   .log-audio { width: 100%; height: 36px; margin-top: 6px; }
   .del-btn { margin-top: 8px; background: #7f1d1d; color: #fecaca; border: 1px solid #991b1b; border-radius: 6px; font-size: 12px; padding: 5px 10px; cursor: pointer; }
   .new-badge { background: #ef4444; color: #fff; font-size: 10px; font-weight: bold; padding: 1px 6px; border-radius: 10px; margin-left: 4px; display: none; }
+
+  #modalOverlay { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; z-index: 65; }
+  .modal-card { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 92%; max-width: 400px; max-height: 82vh; overflow-y: auto; background: #111827; border: 1px solid #1f2937; border-radius: 16px; z-index: 70; padding: 16px; flex-direction: column; text-align: left; }
+  .chooser-row { display: flex; justify-content: space-between; align-items: center; background: #1f2937; padding: 10px; border-radius: 8px; margin-bottom: 6px; font-size: 13px; cursor: pointer; }
+  .chooser-heading { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #64748b; margin: 14px 0 6px; }
+  .chooser-empty { color: #6b7280; font-size: 12px; padding: 6px 0; }
+  .chooser-edit { background: transparent; border: none; color: #94a3b8; font-size: 15px; cursor: pointer; padding: 2px 6px; }
+  .checklist { max-height: 160px; overflow-y: auto; margin-top: 6px; }
+  .check-row { display: flex; align-items: center; gap: 8px; padding: 7px 4px; font-size: 13px; }
+  .check-row input { width: auto; height: auto; margin: 0; }
+  #otherActivity { font-size: 11px; color: #94a3b8; margin-top: 6px; display: none; }
 </style>
 </head>
 <body>
@@ -103,7 +116,10 @@
   <div class="status-panel">
     <div>Online: <span style="color:#22c55e;font-weight:bold" id="onlineCount">1</span></div>
     <div id="channelState" style="margin-top:4px;font-weight:bold;color:#22c55e;font-size:13px">🟢 Channel Clear (Ready)</div>
+    <div id="otherActivity"></div>
   </div>
+
+  <button class="target-pill" id="targetPill" type="button" onclick="openTargetChooser()">📢 Talking to: <span id="targetLabel">Everyone</span> (tap to change)</button>
 
   <div class="ptt-wrapper">
     <div class="ptt-btn" id="pttButton">
@@ -111,7 +127,7 @@
       <span id="pttSub" style="font-size:11px;font-weight:normal;margin-top:3px">TO SPEAK</span>
     </div>
   </div>
-  <p style="font-size:11px;color:#64748b;margin:0">All transmissions are saved in <strong>📜 History</strong> for everyone.</p>
+  <p style="font-size:11px;color:#64748b;margin:0">Only <strong>Everyone</strong> talks are saved in <strong>📜 History</strong>.</p>
 </div>
 
 <!-- HISTORY DRAWER -->
@@ -126,26 +142,35 @@
   </div>
 </div>
 
+<!-- GENERIC MODAL (Talk To / New Group / Edit Group) -->
+<div id="modalOverlay" onclick="closeModal()"></div>
+<div class="modal-card" id="modalCard">
+  <div class="drawer-header">
+    <span id="modalTitle" style="font-size:15px;font-weight:bold"></span>
+    <button class="drawer-close" type="button" onclick="closeModal()">&times;</button>
+  </div>
+  <div id="modalBody"></div>
+</div>
+
 <script>
 const TARGET_RATE = 16000;
 let currentRole = 'student';
 let ws = null, ctx = null, stream = null, processor = null;
 let mediaDest = null, keepAliveEl = null, wakeLock = null;
 let creds = null;          // login info kept in memory for auto-reconnect
-let myId = null, speaker = null;
+let myId = null, myPid = null;
 let holding = false, transmitting = false, loggedIn = false;
 let nextPlayTime = 0, reconnectTimer = null, newCount = 0;
+let currentTarget = { type: 'main' };
+let onlineListArr = [], directory = [], groups = [];
+const activeSpeakers = new Map(); // targetKey -> { user, target }
 const seen = new Set();
-const logElements = new Map();   // recording id -> its element on screen
+const logElements = new Map();
 const $ = (id) => document.getElementById(id);
 
+const targetKeyClient = (t) => (t.type === 'main' ? 'main' : t.type + ':' + t.id);
+
 /* ---------- Background keep-alive (Android) ---------- */
-// Routes all sound through one real <audio> element instead of raw speaker
-// output, and tells the phone's OS "this is a media player" via Media Session.
-// That's what lets Chrome on Android keep a page running (with a small
-// notification icon) after you minimize it — the same trick music/podcast
-// sites use. iPhone (Safari) does not honor this while minimized; that is
-// an Apple restriction with no workaround from a website.
 function setupBackgroundAudio() {
   mediaDest = ctx.createMediaStreamDestination();
   keepAliveEl = document.createElement('audio');
@@ -156,36 +181,23 @@ function setupBackgroundAudio() {
   document.body.appendChild(keepAliveEl);
   keepAliveEl.play().catch(() => {});
 
-  // A silent, continuous tone. Keeping the audio element ACTUALLY playing
-  // (never fully idle) is what stops Android from freezing the page while
-  // it's minimized — a truly silent/idle element gets throttled just like
-  // a normal tab.
   const hum = ctx.createOscillator();
   const humGain = ctx.createGain();
-  hum.frequency.value = 30;          // low, effectively inaudible
+  hum.frequency.value = 30;
   humGain.gain.value = 0.0004;
   hum.connect(humGain); humGain.connect(mediaDest);
   hum.start();
 
   if ('mediaSession' in navigator) {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: 'GFGC Midigeshi Radio',
-      artist: 'Campus Channel — Listening'
-    });
+    navigator.mediaSession.metadata = new MediaMetadata({ title: 'GFGC Midigeshi Radio', artist: 'Campus Channel — Listening' });
     navigator.mediaSession.playbackState = 'playing';
-    // Show a play/pause control that doesn't actually pause the channel —
-    // it only mutes/unmutes so you don't lose your place on the channel.
-    navigator.mediaSession.setActionHandler('play', () => { keepAliveEl.muted = false; navigator.mediaSession.playbackState = 'playing'; });
-    navigator.mediaSession.setActionHandler('pause', () => { keepAliveEl.muted = false; navigator.mediaSession.playbackState = 'playing'; });
+    navigator.mediaSession.setActionHandler('play', () => { navigator.mediaSession.playbackState = 'playing'; });
+    navigator.mediaSession.setActionHandler('pause', () => { navigator.mediaSession.playbackState = 'playing'; });
   }
 }
-
 async function requestWakeLock() {
-  try {
-    if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
-  } catch (e) {}
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
 }
-
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     if (ctx && ctx.state === 'suspended') ctx.resume();
@@ -221,27 +233,235 @@ function beep(end) {
   } catch (e) {}
 }
 
+/* ---------- Talk-To chooser & groups ---------- */
+function closeModal() { $('modalOverlay').style.display = 'none'; $('modalCard').style.display = 'none'; }
+function openModal(title) { $('modalTitle').textContent = title; $('modalOverlay').style.display = 'block'; $('modalCard').style.display = 'flex'; }
+
+function personLabel(p) {
+  return p.role === 'lecturer' ? `🎓 Prof. ${p.name} (${p.subject})` : `👤 ${p.name} (${p.uClass})`;
+}
+
+function setTarget(target, label) {
+  currentTarget = target;
+  $('targetLabel').textContent = label;
+  updateUI();
+}
+
+function openTargetChooser() {
+  const body = $('modalBody'); body.innerHTML = '';
+
+  const mainRow = document.createElement('div');
+  mainRow.className = 'chooser-row';
+  mainRow.textContent = '🌐 Everyone (Main Channel)';
+  mainRow.onclick = () => { setTarget({ type: 'main' }, 'Everyone'); closeModal(); };
+  body.appendChild(mainRow);
+
+  const onlineHeading = document.createElement('div');
+  onlineHeading.className = 'chooser-heading'; onlineHeading.textContent = 'Online Now';
+  body.appendChild(onlineHeading);
+
+  const others = onlineListArr.filter((p) => p.pid !== myPid);
+  if (!others.length) {
+    const e = document.createElement('div'); e.className = 'chooser-empty'; e.textContent = 'No one else online right now.';
+    body.appendChild(e);
+  }
+  others.forEach((p) => {
+    const row = document.createElement('div'); row.className = 'chooser-row';
+    row.textContent = personLabel(p);
+    row.onclick = () => { setTarget({ type: 'user', id: p.pid }, p.name); closeModal(); };
+    body.appendChild(row);
+  });
+
+  const groupHeading = document.createElement('div');
+  groupHeading.className = 'chooser-heading'; groupHeading.textContent = 'My Groups';
+  body.appendChild(groupHeading);
+
+  if (!groups.length) {
+    const e = document.createElement('div'); e.className = 'chooser-empty'; e.textContent = 'No groups yet.';
+    body.appendChild(e);
+  }
+  groups.forEach((g) => {
+    const row = document.createElement('div'); row.className = 'chooser-row';
+    const label = document.createElement('span');
+    label.textContent = '👥 ' + g.name + ` (${g.members.length})`;
+    label.onclick = () => { setTarget({ type: 'group', id: g.id }, g.name); closeModal(); };
+    row.appendChild(label);
+    if (g.creatorId === myPid) {
+      const edit = document.createElement('button');
+      edit.type = 'button'; edit.className = 'chooser-edit'; edit.textContent = '✏️';
+      edit.onclick = (e) => { e.stopPropagation(); openEditGroup(g.id); };
+      row.appendChild(edit);
+    }
+    body.appendChild(row);
+  });
+
+  const newBtn = document.createElement('button');
+  newBtn.type = 'button'; newBtn.className = 'primary-btn'; newBtn.style.marginTop = '10px';
+  newBtn.textContent = '+ Create New Group';
+  newBtn.onclick = () => openCreateGroup();
+  body.appendChild(newBtn);
+
+  openModal('Talk To');
+}
+
+function personChecklist(container, excludeIds, onToggle) {
+  const search = document.createElement('input');
+  search.type = 'text'; search.placeholder = 'Search name...';
+  container.appendChild(search);
+  const list = document.createElement('div'); list.className = 'checklist';
+  container.appendChild(list);
+
+  function render(filterText) {
+    list.innerHTML = '';
+    const matches = directory
+      .filter((p) => p.pid !== myPid && !excludeIds.has(p.pid))
+      .filter((p) => !filterText || p.name.toLowerCase().includes(filterText.toLowerCase()));
+    matches.forEach((p) => {
+      const row = document.createElement('label'); row.className = 'check-row';
+      const cb = document.createElement('input'); cb.type = 'checkbox';
+      cb.onchange = () => onToggle(p.pid, cb.checked);
+      const span = document.createElement('span'); span.textContent = personLabel(p);
+      row.append(cb, span);
+      list.appendChild(row);
+    });
+    if (!matches.length) {
+      const e = document.createElement('div'); e.className = 'chooser-empty'; e.textContent = 'No one found.';
+      list.appendChild(e);
+    }
+  }
+  search.oninput = () => render(search.value);
+  render('');
+}
+
+function openCreateGroup() {
+  const body = $('modalBody'); body.innerHTML = '';
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text'; nameInput.placeholder = 'Group name (e.g. Exam Duty Team)';
+  body.appendChild(nameInput);
+
+  const picked = new Set();
+  const wrap = document.createElement('div'); body.appendChild(wrap);
+  personChecklist(wrap, new Set(), (pid, checked) => { checked ? picked.add(pid) : picked.delete(pid); });
+
+  const createBtn = document.createElement('button');
+  createBtn.type = 'button'; createBtn.className = 'primary-btn'; createBtn.style.marginTop = '10px';
+  createBtn.textContent = 'Create Group';
+  createBtn.onclick = () => {
+    const name = nameInput.value.trim();
+    if (!name) return alert('Please enter a group name');
+    if (picked.size < 1) return alert('Pick at least one person');
+    ws.send(JSON.stringify({ type: 'create_group', name, members: [...picked] }));
+    closeModal();
+  };
+  body.appendChild(createBtn);
+  openModal('New Group');
+}
+
+function openEditGroup(groupId) {
+  const g = groups.find((x) => x.id === groupId);
+  if (!g) return;
+  const body = $('modalBody'); body.innerHTML = '';
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text'; nameInput.value = g.name;
+  body.appendChild(nameInput);
+
+  const memberHeading = document.createElement('div');
+  memberHeading.className = 'chooser-heading'; memberHeading.textContent = 'Current Members';
+  body.appendChild(memberHeading);
+
+  const removeSet = new Set();
+  const memberList = document.createElement('div'); body.appendChild(memberList);
+  function renderMembers() {
+    memberList.innerHTML = '';
+    g.members.forEach((pid) => {
+      const p = directory.find((d) => d.pid === pid);
+      if (!p) return;
+      const row = document.createElement('div'); row.className = 'chooser-row';
+      const label = document.createElement('span');
+      label.textContent = personLabel(p) + (pid === g.creatorId ? ' (creator)' : '');
+      row.appendChild(label);
+      if (pid !== g.creatorId) {
+        const rm = document.createElement('button');
+        rm.type = 'button'; rm.className = 'chooser-edit'; rm.textContent = removeSet.has(pid) ? '↩️' : '❌';
+        rm.onclick = () => { removeSet.has(pid) ? removeSet.delete(pid) : removeSet.add(pid); renderMembers(); };
+        row.appendChild(rm);
+      }
+      if (removeSet.has(pid)) row.style.opacity = '0.4';
+      memberList.appendChild(row);
+    });
+  }
+  renderMembers();
+
+  const addHeading = document.createElement('div');
+  addHeading.className = 'chooser-heading'; addHeading.textContent = 'Add People';
+  body.appendChild(addHeading);
+  const addSet = new Set();
+  const addWrap = document.createElement('div'); body.appendChild(addWrap);
+  personChecklist(addWrap, new Set(g.members), (pid, checked) => { checked ? addSet.add(pid) : addSet.delete(pid); });
+
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button'; saveBtn.className = 'primary-btn'; saveBtn.style.marginTop = '10px';
+  saveBtn.textContent = 'Save Changes';
+  saveBtn.onclick = () => {
+    ws.send(JSON.stringify({ type: 'edit_group', groupId: g.id, name: nameInput.value.trim(), addMembers: [...addSet], removeMembers: [...removeSet] }));
+    closeModal();
+  };
+  body.appendChild(saveBtn);
+
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button'; delBtn.className = 'del-btn'; delBtn.style.cssText = 'margin-top:8px;width:100%';
+  delBtn.textContent = '🗑 Delete This Group';
+  delBtn.onclick = () => {
+    if (confirm(`Delete "${g.name}" for everyone in it?`)) {
+      ws.send(JSON.stringify({ type: 'delete_group', groupId: g.id }));
+      closeModal();
+    }
+  };
+  body.appendChild(delBtn);
+
+  openModal('Edit Group');
+}
+
 /* The one function that decides how the button looks */
 function updateUI() {
   const btn = $('pttButton'), state = $('channelState');
-  const otherSpeaking = speaker && speaker.cid !== myId;
+  const key = targetKeyClient(currentTarget);
+  const lock = activeSpeakers.get(key);
+  const busyByOther = lock && lock.user.pid !== myPid;
   btn.classList.remove('transmitting', 'locked');
 
   if (transmitting) {
     btn.classList.add('transmitting');
     $('pttMain').textContent = 'LIVE'; $('pttSub').textContent = 'TRANSMITTING';
     state.textContent = '🎙️ You are speaking...'; state.style.color = '#22c55e';
-  } else if (otherSpeaking) {
+  } else if (busyByOther) {
     btn.classList.add('locked');
     $('pttMain').textContent = 'BUSY'; $('pttSub').textContent = 'IN USE';
-    state.textContent = speaker.role === 'lecturer'
-      ? `🔴 Prof. ${speaker.name} (${speaker.subject}) is speaking...`
-      : `🔴 ${speaker.name} (${speaker.uClass}) is speaking...`;
-    state.style.color = speaker.role === 'lecturer' ? '#fbbf24' : '#ef4444';
+    const u = lock.user;
+    state.textContent = u.role === 'lecturer'
+      ? `🔴 Prof. ${u.name} (${u.subject}) is speaking...`
+      : `🔴 ${u.name} (${u.uClass}) is speaking...`;
+    state.style.color = u.role === 'lecturer' ? '#fbbf24' : '#ef4444';
   } else {
     $('pttMain').textContent = 'HOLD'; $('pttSub').textContent = 'TO SPEAK';
     state.textContent = '🟢 Channel Clear (Ready)'; state.style.color = '#22c55e';
   }
+  renderOtherActivity();
+}
+
+function renderOtherActivity() {
+  const el = $('otherActivity');
+  const key = targetKeyClient(currentTarget);
+  const others = [...activeSpeakers.entries()].filter(([k]) => k !== key);
+  if (!others.length) { el.style.display = 'none'; el.textContent = ''; return; }
+  el.style.display = 'block';
+  el.textContent = '🔊 Also live: ' + others.map(([k, v]) => {
+    let label = 'Direct';
+    if (k === 'main') label = 'Everyone';
+    else if (v.target.type === 'group') { const g = groups.find((x) => x.id === v.target.id); label = g ? g.name : 'Group'; }
+    return `${label} (${v.user.name})`;
+  }).join(', ');
 }
 
 function renderLog(log, isNew) {
@@ -269,7 +489,6 @@ function renderLog(log, isNew) {
 
   item.append(meta, sub, audio);
 
-  // Delete button: any signed-in user can remove a recording for everyone
   const del = document.createElement('button');
   del.type = 'button'; del.className = 'del-btn'; del.textContent = '🗑 Delete';
   del.onclick = () => {
@@ -338,7 +557,6 @@ async function startMicAndConnect() {
     setupBackgroundAudio();
     requestWakeLock();
   } catch (err) {
-    // Mic blocked — fall back to the sign-in screen so the user can retry
     $('loadingBox').style.display = 'none';
     $('loginBox').style.display = 'block';
     showError('Microphone permission is required (use HTTPS).');
@@ -348,7 +566,6 @@ async function startMicAndConnect() {
   return true;
 }
 
-// On page load: if we have a saved login, skip straight to the app instead of the form
 (function tryAutoLogin() {
   const saved = localStorage.getItem(STORE_KEY);
   if (!saved) return;
@@ -397,7 +614,7 @@ function playChunk(buf) {
   const s = ctx.createBufferSource();
   s.buffer = ab; s.connect(mediaDest || ctx.destination);
   const now = ctx.currentTime;
-  if (nextPlayTime < now + 0.05) nextPlayTime = now + 0.2;   // small jitter buffer
+  if (nextPlayTime < now + 0.05) nextPlayTime = now + 0.2;
   s.start(nextPlayTime);
   nextPlayTime += ab.duration;
 }
@@ -422,7 +639,7 @@ function connect() {
       showError(m.msg); creds = null; ws.close(); return;
     }
     if (m.type === 'welcome') {
-      myId = m.myId; loggedIn = true;
+      myId = m.myId; myPid = m.myPid; loggedIn = true;
       $('loadingBox').style.display = 'none';
       $('loginBox').style.display = 'none';
       $('appContent').style.display = 'block';
@@ -435,21 +652,36 @@ function connect() {
       line2.textContent = u.role === 'lecturer' ? `Staff ID: ${u.staffId}` : `UUCMS: ${u.uucms}`;
       $('userBadge').append(line1, line2);
 
-      // Clear old list first (in case of reconnect), then show the full history
       [...logElements.keys()].forEach(removeLog);
       m.history.forEach((l) => renderLog(l, false));
       $('onlineCount').textContent = m.online;
-      speaker = m.speaker; nextPlayTime = 0; updateUI();
+      onlineListArr = m.onlineList || [];
+      directory = m.directory || [];
+      groups = m.groups || [];
+      currentTarget = { type: 'main' }; $('targetLabel').textContent = 'Everyone';
+      activeSpeakers.clear(); nextPlayTime = 0; updateUI();
     } else if (m.type === 'online') {
       $('onlineCount').textContent = m.count;
+      onlineListArr = m.list || [];
+    } else if (m.type === 'directory_update') {
+      const idx = directory.findIndex((d) => d.pid === m.entry.pid);
+      if (idx >= 0) directory[idx] = m.entry; else directory.push(m.entry);
+    } else if (m.type === 'group_update') {
+      const idx = groups.findIndex((g) => g.id === m.group.id);
+      if (idx >= 0) groups[idx] = m.group; else groups.push(m.group);
+      if (currentTarget.type === 'group' && currentTarget.id === m.group.id) $('targetLabel').textContent = m.group.name;
+    } else if (m.type === 'group_removed') {
+      groups = groups.filter((g) => g.id !== m.id);
+      if (currentTarget.type === 'group' && currentTarget.id === m.id) setTarget({ type: 'main' }, 'Everyone');
     } else if (m.type === 'speaking') {
-      speaker = m.user; nextPlayTime = 0;
-      if (speaker.cid !== myId) beep(false);
+      activeSpeakers.set(m.key, { user: m.user, target: m.target });
+      if (m.user.pid !== myPid) beep(false);
       updateUI();
     } else if (m.type === 'idle') {
-      const wasOther = speaker && speaker.cid !== myId;
-      speaker = null; transmitting = false; updateUI();
-      if (wasOther) beep(true);
+      const was = activeSpeakers.get(m.key);
+      activeSpeakers.delete(m.key);
+      updateUI();
+      if (was && was.user.pid !== myPid) beep(true);
     } else if (m.type === 'new_log') {
       renderLog(m.log, true);
     } else if (m.type === 'log_deleted') {
@@ -464,7 +696,7 @@ function connect() {
 
   ws.onclose = () => {
     transmitting = false; holding = false;
-    if (creds) {   // auto-reconnect
+    if (creds) {
       if (loggedIn) $('channelState').textContent = '⚠️ Reconnecting...';
       reconnectTimer = setTimeout(connect, 2000);
     }
@@ -477,11 +709,13 @@ const ptt = $('pttButton');
 function pttDown(e) {
   e.preventDefault();
   if (!ws || ws.readyState !== 1 || holding) return;
-  if (speaker && speaker.cid !== myId) return;          // channel busy
+  const key = targetKeyClient(currentTarget);
+  const lock = activeSpeakers.get(key);
+  if (lock && lock.user.pid !== myPid) return;
   holding = true;
   try { ptt.setPointerCapture(e.pointerId); } catch (err) {}
   ctx.resume();
-  ws.send(JSON.stringify({ type: 'ptt_start' }));
+  ws.send(JSON.stringify({ type: 'ptt_start', target: currentTarget }));
 }
 function pttUp(e) {
   if (e) e.preventDefault();
@@ -500,3 +734,14 @@ ptt.addEventListener('contextmenu', (e) => e.preventDefault());
 </script>
 </body>
 </html>
+HTMLEOF
+python3 - <<'EOF'
+import re
+h=open('/mnt/user-data/outputs/index.html',encoding='utf8').read()
+s=re.search(r'<script>(.*)</script>',h,re.S).group(1)
+open('/tmp/c4.js','w').write(s)
+EOF
+node --check /tmp/c4.js && echo "index.html script OK"
+Output
+
+index.html script OK

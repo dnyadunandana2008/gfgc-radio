@@ -1,3 +1,4 @@
+cat > /mnt/user-data/outputs/server.js << 'SERVEREOF'
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -8,18 +9,28 @@ const STUDENT_PASS = process.env.STUDENT_PASS || 'Pass@123';
 const STAFF_PASS = process.env.STAFF_PASS || 'Staff@123';   // change this!
 const SAMPLE_RATE = 16000;
 const MAX_SECONDS = 60;      // max one transmission
-const MAX_HISTORY = 200;     // keep last 200 recordings
+const MAX_HISTORY = 200;     // keep last 200 recordings (Main channel only)
 
 const DATA = path.join(__dirname, 'data');
 const REC = path.join(DATA, 'rec');
 const META = path.join(DATA, 'history.json');
+const DIR_FILE = path.join(DATA, 'directory.json');
+const GROUPS_FILE = path.join(DATA, 'groups.json');
 fs.mkdirSync(REC, { recursive: true });
 
 let history = [];
 try { history = JSON.parse(fs.readFileSync(META, 'utf8')); } catch (e) {}
 const saveMeta = () => fs.writeFile(META, JSON.stringify(history), () => {});
 
-// ---------- HTTP (serves page + recordings) ----------
+let directory = {}; // persistId -> {pid, role, name, uClass/subject, uucms/staffId, lastSeen}
+try { directory = JSON.parse(fs.readFileSync(DIR_FILE, 'utf8')); } catch (e) {}
+const saveDirectory = () => fs.writeFile(DIR_FILE, JSON.stringify(directory), () => {});
+
+let groups = {}; // groupId -> {id, name, creatorId, members:[pid...], createdAt}
+try { groups = JSON.parse(fs.readFileSync(GROUPS_FILE, 'utf8')); } catch (e) {}
+const saveGroups = () => fs.writeFile(GROUPS_FILE, JSON.stringify(groups), () => {});
+
+// ---------- HTTP (serves page + recordings + PWA files) ----------
 function serveFile(req, res, file, type) {
   fs.stat(file, (err, st) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
@@ -75,35 +86,72 @@ function makeWav(pcm) {
 // ---------- WebSocket radio ----------
 const wss = new WebSocketServer({ server, maxPayload: 1 << 20 });
 let nextCid = 1;
-let speaker = null; // { ws, user, chunks, bytes, timer }
+const channelLocks = {}; // key -> { ws, user, target, chunks, bytes, timer }
 
 const clean = (s) => String(s || '').trim().slice(0, 60);
 const sendJSON = (ws, obj) => { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); };
-const broadcast = (obj) => wss.clients.forEach((c) => { if (c.user) sendJSON(c, obj); });
 const onlineCount = () => [...wss.clients].filter((c) => c.user).length;
-const broadcastOnline = () => broadcast({ type: 'online', count: onlineCount() });
 
-function endSpeaker() {
-  if (!speaker) return;
-  const s = speaker;
-  speaker = null;
-  clearTimeout(s.timer);
+function persistId(u) {
+  return u.role === 'lecturer' ? 'staff:' + u.staffId.toLowerCase() : 'stu:' + u.uucms.toLowerCase();
+}
+function onlineList() {
+  return [...wss.clients].filter((c) => c.user).map((c) => ({ pid: c.pid, ...c.user }));
+}
+function myGroups(pid) {
+  return Object.values(groups).filter((g) => g.members.includes(pid));
+}
+function broadcastAll(obj) {
+  wss.clients.forEach((c) => { if (c.user) sendJSON(c, obj); });
+}
+function broadcastOnlineList() {
+  broadcastAll({ type: 'online', count: onlineCount(), list: onlineList() });
+}
+function targetKey(t) {
+  return t.type === 'main' ? 'main' : t.type + ':' + t.id;
+}
+function targetRecipients(t, senderWs) {
+  if (t.type === 'main') return [...wss.clients].filter((c) => c.user);
+  if (t.type === 'group') {
+    const g = groups[t.id]; if (!g) return [];
+    return [...wss.clients].filter((c) => c.user && g.members.includes(c.pid));
+  }
+  if (t.type === 'user') {
+    return [...wss.clients].filter((c) => c.user && (c.pid === t.id || c === senderWs));
+  }
+  return [];
+}
+function notifyGroup(id) {
+  const g = groups[id]; if (!g) return;
+  [...wss.clients].forEach((c) => { if (c.user && g.members.includes(c.pid)) sendJSON(c, { type: 'group_update', group: g }); });
+}
+function notifyGroupRemoved(pids, id) {
+  [...wss.clients].forEach((c) => { if (c.user && pids.includes(c.pid)) sendJSON(c, { type: 'group_removed', id }); });
+}
 
-  const pcm = Buffer.concat(s.chunks);
+function endSpeaker(key) {
+  const lock = channelLocks[key];
+  if (!lock) return;
+  delete channelLocks[key];
+  clearTimeout(lock.timer);
+
+  const pcm = Buffer.concat(lock.chunks);
   const duration = pcm.length / 2 / SAMPLE_RATE;
-  if (duration >= 0.4) {
+
+  if (lock.target.type === 'main' && duration >= 0.4) {
     const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     fs.writeFileSync(path.join(REC, id + '.wav'), makeWav(pcm));
-    const log = { id, user: s.user, ts: Date.now(), duration: Math.round(duration * 10) / 10 };
+    const log = { id, user: lock.user, ts: Date.now(), duration: Math.round(duration * 10) / 10 };
     history.push(log);
     while (history.length > MAX_HISTORY) {
       const old = history.shift();
       fs.unlink(path.join(REC, old.id + '.wav'), () => {});
     }
     saveMeta();
-    broadcast({ type: 'new_log', log });
+    broadcastAll({ type: 'new_log', log });
   }
-  broadcast({ type: 'idle' });
+
+  targetRecipients(lock.target, lock.ws).forEach((c) => sendJSON(c, { type: 'idle', key, target: lock.target }));
 }
 
 wss.on('connection', (ws) => {
@@ -111,13 +159,14 @@ wss.on('connection', (ws) => {
   ws.on('pong', () => { ws.isAlive = true; });
 
   ws.on('message', (data, isBinary) => {
-    // Audio frames
     if (isBinary) {
-      if (!speaker || speaker.ws !== ws || data.length % 2 !== 0) return;
-      speaker.chunks.push(Buffer.from(data));
-      speaker.bytes += data.length;
-      wss.clients.forEach((c) => {
-        if (c !== ws && c.user && c.readyState === 1) c.send(data, { binary: true });
+      const active = Object.entries(channelLocks).find(([, l]) => l.ws === ws);
+      if (!active || data.length % 2 !== 0) return;
+      const [, lock] = active;
+      lock.chunks.push(Buffer.from(data));
+      lock.bytes += data.length;
+      targetRecipients(lock.target, ws).forEach((c) => {
+        if (c !== ws && c.readyState === 1) c.send(data, { binary: true });
       });
       return;
     }
@@ -137,31 +186,81 @@ wss.on('connection', (ws) => {
         if (!user.name || !user.uucms || !user.uClass) return sendJSON(ws, { type: 'error', msg: 'Fill all fields' });
       }
       user.cid = nextCid++;
+      const pid = persistId(user);
+      user.pid = pid;
       ws.user = user;
+      ws.pid = pid;
+
+      directory[pid] = { pid, role: user.role, name: user.name, uClass: user.uClass, subject: user.subject, staffId: user.staffId, uucms: user.uucms, lastSeen: Date.now() };
+      saveDirectory();
+
       sendJSON(ws, {
         type: 'welcome',
         myId: user.cid,
+        myPid: pid,
         history,
-        speaker: speaker ? speaker.user : null,
-        online: onlineCount()
+        online: onlineCount(),
+        onlineList: onlineList(),
+        directory: Object.values(directory),
+        groups: myGroups(pid)
       });
-      broadcastOnline();
+      broadcastOnlineList();
+      broadcastAll({ type: 'directory_update', entry: directory[pid] });
       return;
     }
 
     if (!ws.user) return;
 
-    if (msg.type === 'ptt_start') {
-      if (speaker && speaker.ws !== ws) return sendJSON(ws, { type: 'denied' });
-      if (!speaker) {
-        speaker = { ws, user: ws.user, chunks: [], bytes: 0, timer: setTimeout(endSpeaker, MAX_SECONDS * 1000) };
-        broadcast({ type: 'speaking', user: ws.user });
+    if (msg.type === 'create_group') {
+      const name = clean(msg.name) || 'Untitled Group';
+      let members = Array.isArray(msg.members) ? msg.members.filter((id) => directory[id]) : [];
+      members = [...new Set([...members, ws.pid])];
+      if (members.length < 2) return sendJSON(ws, { type: 'error', msg: 'Pick at least one other person' });
+      const id = 'g_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+      groups[id] = { id, name, creatorId: ws.pid, members, createdAt: Date.now() };
+      saveGroups();
+      notifyGroup(id);
+    } else if (msg.type === 'edit_group') {
+      const g = groups[msg.groupId];
+      if (!g || g.creatorId !== ws.pid) return;
+      const before = [...g.members];
+      if (typeof msg.name === 'string' && clean(msg.name)) g.name = clean(msg.name);
+      if (Array.isArray(msg.addMembers)) {
+        msg.addMembers.forEach((id) => { if (directory[id] && !g.members.includes(id)) g.members.push(id); });
       }
-      sendJSON(ws, { type: 'granted' });
+      if (Array.isArray(msg.removeMembers)) {
+        g.members = g.members.filter((id) => id === g.creatorId || !msg.removeMembers.includes(id));
+      }
+      saveGroups();
+      const removedPids = before.filter((id) => !g.members.includes(id));
+      if (removedPids.length) notifyGroupRemoved(removedPids, g.id);
+      notifyGroup(g.id);
+    } else if (msg.type === 'delete_group') {
+      const g = groups[msg.groupId];
+      if (!g || g.creatorId !== ws.pid) return;
+      const members = g.members;
+      delete groups[msg.groupId];
+      saveGroups();
+      notifyGroupRemoved(members, msg.groupId);
+    } else if (msg.type === 'ptt_start') {
+      const target = msg.target && msg.target.type ? msg.target : { type: 'main' };
+      if (target.type === 'group') {
+        const g = groups[target.id];
+        if (!g || !g.members.includes(ws.pid)) return sendJSON(ws, { type: 'denied' });
+      } else if (target.type === 'user') {
+        if (!directory[target.id] || target.id === ws.pid) return sendJSON(ws, { type: 'denied' });
+      }
+      const key = targetKey(target);
+      if (channelLocks[key] && channelLocks[key].ws !== ws) return sendJSON(ws, { type: 'denied' });
+      if (!channelLocks[key]) {
+        channelLocks[key] = { ws, user: ws.user, target, chunks: [], bytes: 0, timer: setTimeout(() => endSpeaker(key), MAX_SECONDS * 1000) };
+        targetRecipients(target, ws).forEach((c) => sendJSON(c, { type: 'speaking', user: ws.user, target, key }));
+      }
+      sendJSON(ws, { type: 'granted', target, key });
     } else if (msg.type === 'ptt_end') {
-      if (speaker && speaker.ws === ws) endSpeaker();
+      const active = Object.entries(channelLocks).find(([, l]) => l.ws === ws);
+      if (active) endSpeaker(active[0]);
     } else if (msg.type === 'delete_log') {
-      // Any signed-in user (student or lecturer) can delete a recording
       const id = String(msg.id || '');
       if (!/^[\w-]+$/.test(id)) return;
       const idx = history.findIndex((l) => l.id === id);
@@ -169,13 +268,14 @@ wss.on('connection', (ws) => {
       history.splice(idx, 1);
       fs.unlink(path.join(REC, id + '.wav'), () => {});
       saveMeta();
-      broadcast({ type: 'log_deleted', id });
+      broadcastAll({ type: 'log_deleted', id });
     }
   });
 
   ws.on('close', () => {
-    if (speaker && speaker.ws === ws) endSpeaker();
-    if (ws.user) broadcastOnline();
+    const active = Object.entries(channelLocks).find(([, l]) => l.ws === ws);
+    if (active) endSpeaker(active[0]);
+    if (ws.user) broadcastOnlineList();
   });
   ws.on('error', () => {});
 });
@@ -189,3 +289,8 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => console.log('GFGC Radio running on port ' + PORT));
+SERVEREOF
+node --check /mnt/user-data/outputs/server.js && echo "server.js OK"
+Output
+
+server.js OK
